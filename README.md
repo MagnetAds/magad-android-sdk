@@ -1,1 +1,0 @@
-# magad-android-sdk
