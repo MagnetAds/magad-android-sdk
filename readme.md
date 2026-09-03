@@ -1,6 +1,6 @@
 # MagnetAd Android SDK — Publisher Integration Guide
 
-A step-by-step guide to using the **MagnetAd** advertising package in **Android (Kotlin/Java)** projects to display **fullscreen (Interstitial)** ads.
+A step-by-step guide to using the **MagnetAd** advertising package in **Android (Kotlin/Java)** projects to display **fullscreen (Interstitial)** and **Rewarded** ads.
 
 > 🇮🇷 نسخهٔ فارسی این راهنما: [readme_fa.md](readme_fa.md)
 
@@ -16,23 +16,28 @@ A step-by-step guide to using the **MagnetAd** advertising package in **Android 
 6. [Step 4 — Initializing the SDK](#step-4--initializing-the-sdk)
 7. [Step 5 — Loading and showing an ad](#step-5--loading-and-showing-an-ad)
 8. [Step 6 — Events (AdListener) and the load result (AdLoadResult)](#step-6--events-adlistener-and-the-load-result-adloadresult)
-9. [Full API reference](#full-api-reference)
-10. [Error codes](#error-codes)
-11. [How the SDK behaves internally](#how-the-sdk-behaves-internally)
-12. [Troubleshooting](#troubleshooting)
-13. [Limitations](#limitations)
+9. [Step 7 — Video and rewarded ads](#step-7--video-and-rewarded-ads)
+10. [Controlling video volume](#controlling-video-volume)
+11. [Using several placements at once](#using-several-placements-at-once)
+12. [Full API reference](#full-api-reference)
+13. [Error codes](#error-codes)
+14. [How the SDK behaves internally](#how-the-sdk-behaves-internally)
+15. [Troubleshooting](#troubleshooting)
+16. [Limitations](#limitations)
 
 ---
 
 ## 1. Overview
 
-- Ad type: **fullscreen (Interstitial)** — image based.
+- Ad type: **fullscreen (Interstitial)** and **Rewarded**, with an **image or video** creative.
 - Platform: **Android** (minimum API 21 / Android 5.0).
 - Written in **Kotlin** with **Coroutines**; straightforward to use from Kotlin and fully usable from Java as well.
-- Networking uses **OkHttp** and response parsing uses **kotlinx.serialization** (because distribution is via an AAR file, you add these dependencies to your `build.gradle` yourself — see [Step 1](#step-1--adding-the-package-aar-file)).
+- Networking uses **OkHttp** and response parsing uses **kotlinx.serialization** (because distribution is via an AAR file, you add these dependencies to your `build.gradle` yourself — see [Step 1](#step-1--adding-the-package-aar-file)). Video playback uses Android's own `MediaPlayer`, so no extra playback library is added to your project.
 - No dangerous permissions and no runtime permission dialog; only the normal `INTERNET`, `ACCESS_NETWORK_STATE` and `AD_ID` permissions are merged into your manifest.
 - Every public method is **non-blocking**; network work happens in the background and results are delivered on the **main thread**: the load result through `requestAd`'s own callback (an `AdLoadResult`), and post-show events through `AdListener`.
 - The usage pattern matches standard SDKs (AdMob / AppLovin): you create an ad object, listen for events, then load and show.
+
+> **Important about the creative type:** you do not choose whether an ad is an image or a video. The server decides per placement and the SDK selects the right renderer automatically. Your code is identical either way.
 
 ---
 
@@ -93,7 +98,7 @@ Download the AAR from the repository above (the **Releases** section, or whereve
 <your-project>/
 └── app/
     └── libs/
-        └── magnetad-1.0.0.aar
+        └── magnetad-1.8.0.aar
 ```
 
 > The filename carries the version number. When upgrading, **delete** the old file and update the filename in `build.gradle.kts`; if both files stay in `libs`, the build fails with a duplicate class error.
@@ -104,7 +109,7 @@ Because the AAR does not come from a Maven repository, there is no POM file alon
 
 ```kotlin
 dependencies {
-    implementation(files("libs/magnetad-1.0.0.aar"))
+    implementation(files("libs/magnetad-1.8.0.aar"))
 
     // Required by the SDK. Without these the project still compiles,
     // but crashes at runtime with NoClassDefFoundError:
@@ -122,7 +127,7 @@ The Groovy equivalent (if you use `build.gradle`):
 
 ```groovy
 dependencies {
-    implementation files('libs/magnetad-1.0.0.aar')
+    implementation files('libs/magnetad-1.8.0.aar')
 
     implementation 'org.jetbrains.kotlin:kotlin-stdlib:2.0.21'
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1'
@@ -190,6 +195,8 @@ You receive two identifiers from the Magnet publisher panel:
 - **Placement Id** — the placement identifier; used in `getInterstitialAd`.
 
 > These are strings, and **validating their format is the server's responsibility**.
+
+> The placement type (regular or rewarded) is set when you create it in the panel, not in your code. Get a separate Placement Id for each type.
 
 > Use the same IDs from the panel throughout development and release.
 
@@ -299,6 +306,8 @@ class MainActivity : ComponentActivity() {
 }
 ```
 
+> **Hold on to the `InterstitialAd` instance.** Every `getInterstitialAd` call builds a **brand new** instance with an empty cache. If you call it again at show time, `show` fails with `AD_NOT_READY`, because the `adId` belongs to the instance that loaded it, not to the placement.
+
 > To show another ad, call `requestAd` again and get a fresh `adId`. Each `adId` is valid for exactly one `show` — it is retired as soon as the ad is shown (or expires), so every `InterstitialAd` instance needs a new load after each show.
 
 ### The same code in Java
@@ -387,7 +396,7 @@ The load result no longer arrives through `AdListener`; the callback you pass to
 
 | `AdLoadResult` value | Meaning |
 |---|---|
-| `AdLoadResult.Success(adId)` | The ad and its image are ready; keep the `adId` and pass it to `show`. |
+| `AdLoadResult.Success(adId)` | The ad and its creative (image or video) are ready; keep the `adId` and pass it to `show`. |
 | `AdLoadResult.Failure(error)` | The load failed (network, server, no fill, …). |
 
 `AdListener` reports only what happens **after `show`**:
@@ -397,11 +406,107 @@ The load result no longer arrives through `AdListener`; the callback you pass to
 | `onAdShown()` | The ad appeared on screen. |
 | `onAdClicked()` | The user tapped the ad image (once per ad). **The ad closes immediately afterwards** and `onAdDismissed()` is called as well. |
 | `onAdDismissed()` | The ad was closed — either via the ✕ button or following a user click. |
-| `onAdFailedToShow(error)` | Showing was not possible (invalid/consumed `adId`, expiry, no available Activity, or an image render failure). |
+| `onAdFailedToShow(error)` | Showing was not possible (invalid/consumed `adId`, expiry, no available Activity, a render failure, or a video playback error). |
+| `onRewarded()` | Rewarded placements only: the user watched the video far enough and the reward is due. |
 
 > **Important for games:** if you resume your game or app from `onAdDismissed()`, make sure you do the same in `onAdFailedToShow(error)`. On a show failure the ad closes automatically but **only** `onAdFailedToShow` is called — `onAdDismissed` does not follow — and without this your app stays stuck in that case.
 
 > All callbacks — both the `requestAd` callback and the `AdListener` events — are invoked on the **main thread**, so you can update the UI directly.
+
+---
+
+## Step 7 — Video and rewarded ads
+
+### What changes in your code
+
+**Nothing.** You call the same `getInterstitialAd`, `requestAd` and `show`. The only thing a rewarded placement needs from you is an `onRewarded()` override:
+
+```kotlin
+private lateinit var rewardedAd: InterstitialAd
+private var rewardedAdId: String? = null
+
+override fun onCreate(savedInstanceState: Bundle?) {
+    super.onCreate(savedInstanceState)
+
+    rewardedAd = MagnetAdManager.getInterstitialAd("YOUR-REWARDED-PLACEMENT-ID")
+
+    rewardedAd.setAdListener(object : AdListener() {
+        override fun onRewarded() {
+            // The user watched the video; show the reward in your UI here
+            showCoinAnimation()
+        }
+
+        override fun onAdDismissed() {
+            rewardedAdId = null
+            preloadRewarded()
+        }
+
+        override fun onAdFailedToShow(error: AdError) {
+            rewardedAdId = null
+        }
+    })
+
+    preloadRewarded()
+}
+
+private fun preloadRewarded() {
+    rewardedAd.requestAd(this) { result ->
+        rewardedAdId = (result as? AdLoadResult.Success)?.adId
+    }
+}
+
+private fun onWatchForCoinsClicked() {
+    rewardedAdId?.let { rewardedAd.show(this, it) }
+}
+```
+
+### Telling the placement type apart in code
+
+After a successful load you can read which creative type the server returned:
+
+```kotlin
+when (rewardedAd.placementType) {
+    PlacementType.REWARDED     -> { /* rewarded ad */ }
+    PlacementType.INTERSTITIAL -> { /* regular ad */ }
+    null                       -> { /* nothing loaded yet */ }
+}
+```
+
+---
+
+## Controlling video volume
+
+You set the starting volume in `AdConfig` and can change it at any time, including mid-playback:
+
+```kotlin
+MagnetAdManager.setVideoVolume(0.5f)   // 0f to 1f; values outside the range are clamped
+MagnetAdManager.getVideoVolume()       // current value
+
+MagnetAdManager.setVideoMuted(true)    // mute without losing the previous value
+MagnetAdManager.isVideoMuted()         // current state
+```
+
+> `setVideoMuted(false)` restores the volume that was set before muting. These methods are callable from any thread.
+
+> If your game has a sound toggle, pass its state through `AdConfig.videoVolume` at `initialize` and keep it in sync with these methods afterwards. Changing the `AdConfig` field directly after `initialize` has no effect.
+
+---
+
+## Using several placements at once
+
+If you have both a regular and a rewarded placement, create a separate instance for each and keep both as fields. The instances are fully independent: each has its own cache, callbacks and lifecycle, and loading them at the same time causes no interference.
+
+```kotlin
+private lateinit var interstitialAd: InterstitialAd
+private lateinit var rewardedAd: InterstitialAd
+
+interstitialAd = MagnetAdManager.getInterstitialAd("PLACEMENT-INTERSTITIAL")
+rewardedAd     = MagnetAdManager.getInterstitialAd("PLACEMENT-REWARDED")
+```
+
+> Show only **one** ad at a time. The SDK does not stop you from showing two at once, and the result is two stacked dialogs.
+
+> Call `destroy()` on both instances in `onDestroy`.
 
 ---
 
@@ -418,21 +523,38 @@ object MagnetAdManager {
     fun isInitialized(): Boolean
     fun getSDKVersion(): String
     fun getConfig(): AdConfig?
+
+    fun setVideoVolume(volume: Float)
+    fun getVideoVolume(): Float
+    fun setVideoMuted(muted: Boolean)
+    fun isVideoMuted(): Boolean
+
     fun clearCache()
     fun shutdown()
     fun onTrimMemory(level: Int)
 }
 
 class InterstitialAd {
+    val state: AdState                                        // IDLE / LOADING / LOADED / SHOWING / DESTROYED
+    val placementType: PlacementType?                         // filled in after a successful load
+
     fun setAdListener(listener: AdListener)
     fun isAdReady(): Boolean                                  // no need to hold on to the adId yourself
     fun requestAd(
         context: Context,
+        timeoutMs: Long = DEFAULT_REQUEST_TIMEOUT_MS,         // defaults to 30s; overall cap on the load
         callback: AdLoadCallback                              // fun interface; usable from Java as a lambda
     )                                                         // non-blocking; result arrives in the callback
-                                                              // the whole load is capped at 15s -> TIMEOUT
     fun show(activity: Activity, adId: String)                // shows the ad matching this adId
     fun destroy()                                             // cancels the load and releases resources
+}
+
+abstract class AdListener {
+    open fun onAdShown()
+    open fun onAdDismissed()
+    open fun onAdClicked()
+    open fun onAdFailedToShow(error: AdError)
+    open fun onRewarded()
 }
 
 sealed class AdLoadResult {
@@ -440,10 +562,15 @@ sealed class AdLoadResult {
     data class Failure(val error: AdError) : AdLoadResult()
 }
 
+enum class PlacementType { INTERSTITIAL, REWARDED }
+
+enum class AdState { IDLE, LOADING, LOADED, SHOWING, DESTROYED }
+
 data class AdConfig(
     val appId: String,
     var debugMode: Boolean = false,
-    val cacheSizeMb: Int = 50
+    val cacheSizeMb: Int = 50,
+    var videoVolume: Float = 1f
 )
 
 data class AdError(val code: String, val message: String)
@@ -452,11 +579,14 @@ data class AdError(val code: String, val message: String)
 | Method | Description |
 |---|---|
 | `initialize(app, config, onInitComplete?)` | Call once in `Application`. Non-blocking. |
-| `getInterstitialAd(placementId)` | Creates a fullscreen ad object for the given placement. Throws if called before `initialize`, or with a blank ID. |
+| `getInterstitialAd(placementId)` | Creates a **new** ad object for the given placement. Throws if called before `initialize`, or with a blank ID. Hold on to the instance instead of rebuilding it for every show. |
+| `state` | A live read of what the instance is holding, for detecting "the ad I thought was showing is gone" without waiting on a callback. |
+| `placementType` | The creative type returned by the most recent successful load; `null` before that. |
 | `isAdReady()` | Whether a valid, unexpired ad is currently cached and ready to show — without you having to hold on to the `adId`. |
-| `requestAd(context, callback)` | Explicitly loads an ad in the background, under a fixed overall time cap of 15 seconds; past that the `callback` fires with `AdErrorCode.TIMEOUT`. The cap is not configurable. The result (`AdLoadResult`) arrives only through this `callback`. Callable from any thread. The SDK never loads automatically. If a valid ad is already cached, the same `adId` is returned with no new network request (single-slot cache). If a load is already in flight (for example a double-tapped button), this call's `callback` is queued alongside it and receives that same load's result — it is not ignored. |
+| `requestAd(context, timeoutMs?, callback)` | Explicitly loads an ad in the background, under an overall time cap (30 seconds by default); past that the `callback` fires with `AdErrorCode.TIMEOUT`. The result (`AdLoadResult`) arrives only through this `callback`. Callable from any thread. The SDK never loads automatically. If a valid ad is already cached, the same `adId` is returned with no new network request (single-slot cache). If a load is already in flight (for example a double-tapped button), this call's `callback` is queued alongside it and receives that same load's result — it is not ignored. |
 | `show(activity, adId)` | Shows the ad matching `adId`. Requires an active **Activity**. The `adId` must come from the most recent `AdLoadResult.Success` and must not have been consumed yet. |
 | `destroy()` | Call in `onDestroy` to release resources. |
+| `setVideoVolume(v)` / `setVideoMuted(b)` | Control video ad volume, even mid-playback. |
 | `shutdown()` | Fully shuts the SDK down (rarely needed). |
 
 ---
@@ -471,13 +601,17 @@ These are the values that appear in `AdError.code`:
 | `NETWORK_ERROR` | The server was unreachable, or a connection error occurred. |
 | `SERVER_ERROR` | Server-side error (unsuccessful HTTP status). |
 | `INVALID_RESPONSE` | The server response could not be parsed. |
-| `ASSET_LOAD_FAILED` | Downloading the ad image failed. |
+| `ASSET_LOAD_FAILED` | Downloading the ad image or video failed. |
+| `UNEXPECTED_AD_TYPE` | The server returned a creative type this SDK version does not support. |
 | `NO_FILL` | No suitable ad was available at that moment. This is not an error and happens in normal operation; skip it silently and call `requestAd` again later. |
-| `TIMEOUT` | The whole load (network request + image download) exceeded the fixed 15-second cap. |
+| `TIMEOUT` | The whole load (network request + creative download) exceeded `timeoutMs`, 30 seconds by default. |
 | `AD_NOT_READY` | `show` was called with an `adId` that does not match the loaded ad — for example you have not called `requestAd` yet, or that same `adId` was already shown once. |
 | `AD_EXPIRED` | The loaded ad has expired; call `requestAd` again. |
 | `ACTIVITY_UNAVAILABLE` | The Activity was finishing or being destroyed. |
 | `SHOW_FAILED` | Showing the ad failed. |
+| `VIDEO_PLAYBACK_ERROR` | The video player reported an error. |
+| `VIDEO_SERVER_DIED` | The system media playback service died. |
+| `VIDEO_TIMEOUT` | Video playback stalled and the watchdog closed it. |
 | `UNKNOWN` | Unspecified error. |
 
 > Branch on `error.code` rather than parsing the message text — these code values are stable.
@@ -487,10 +621,14 @@ These are the values that appear in `AdError.code`:
 ## How the SDK behaves internally
 
 - **Non-blocking:** the network request and image download run in coroutines on background threads; the `requestAd` callback and the `AdListener` events come back on the main thread.
-- **Image preloading:** `AdLoadResult.Success` is only emitted once **the ad image has also been downloaded and decoded**, so showing is instant and never flashes a black screen.
+- **Creative preloading:** `AdLoadResult.Success` is only emitted once **the creative (image or video) has also been downloaded**, so showing is instant and never flashes a black screen. A video is downloaded in full to local storage and played from that file; there is no streaming.
+- **Automatic renderer choice:** the SDK decides between the image and video path from the media type the server reports. Your code is identical either way.
 - **No automatic loading:** the SDK never loads an ad by itself — not during `initialize`, and not after a `show`. You are fully in control of when a load happens and when an ad is shown; and each `adId` can only be shown once.
 - **Single-slot cache:** at most one loaded ad exists in the cache at any moment. If you call `requestAd` again while a valid ad (unshown and unexpired) is already cached, no new network request is made; the same `adId` comes back in the `callback`.
-- **Close button:** while the ad is showing, the close button (✕) first displays a **5-second countdown** and then becomes active; during that time the hardware Back button is disabled too.
+- **Close button on image ads:** while the ad is showing, the close button (✕) first displays a **5-second countdown** and then becomes active; during that time the hardware Back button is disabled too.
+- **Close and skip rules on video ads:** whether the user may skip, after how many seconds, and whether Back is enabled are all asserted by the server per fill, not decided by the SDK. For a rewarded placement the server withholds those until the ad is watched far enough.
+- **Video playback:** screen orientation is locked for the duration and restored afterwards, the screen is kept on, and playback pauses and resumes with the host Activity. If the player stalls without reporting completion or an error, a watchdog closes the dialog and reports `VIDEO_TIMEOUT` rather than trapping the user.
+- **Video cache and completion reporting:** downloaded videos are cached up to 100 MB with the oldest evicted first, and any single video is capped at 100 MB. The "watched" event is retried with backoff and persisted on the device when the network is down, so it survives the app being closed and is flushed on the next `requestAd`.
 - **Ad expiry:** a loaded ad has a limited validity period; if you `show` too late you get `AD_EXPIRED` and must load again.
 - **Image render failure:** if the ad image fails to render after `show`, the dialog **closes itself** and `ASSET_LOAD_FAILED` is reported through `onAdFailedToShow`; the user never sees a black screen or an English error message.
 - **HTTPS only:** the SDK's requests go over `https` exclusively; the package adds no cleartext setting or `networkSecurityConfig` to your app.
@@ -509,8 +647,11 @@ These are the values that appear in `AdError.code`:
 | `AD_NOT_READY` on `show` | Either the `adId` is invalid/wrong, or you called `show` before receiving `AdLoadResult.Success`, or that same `adId` was already consumed. Call `requestAd` first, then call `show` with the received `adId` inside its callback. |
 | `AD_EXPIRED` on `show` | Too much time passed between loading and showing; call `requestAd` again in the error callback. |
 | Loading returns `NO_FILL` | Not an integration error; the server simply had no suitable ad at that moment. Do not show the user an error, and retry later. If you **always** get `NO_FILL`, verify the App Id and Placement Id are correct and the placement is enabled in the panel. |
-| Loading returns `TIMEOUT` | The whole load (ad request + creative download) did not finish within 15 seconds, usually because the user's network is slow. Treat it like `NO_FILL`: skip the ad this time and try again later. |
-| Loading returns `ASSET_LOAD_FAILED` | Downloading or decoding the ad image failed — either the network dropped mid-download, or the image exceeds the **10 MB** cap. If it repeats for a specific campaign, report the creative's size to the Magnet team. |
+| Loading returns `TIMEOUT` | The whole load (ad request + creative download) did not finish within `timeoutMs`, 30 seconds by default, usually because the user's network is slow. Treat it like `NO_FILL`: skip the ad this time and try again later. |
+| Loading returns `ASSET_LOAD_FAILED` | Downloading or decoding the creative failed — either the network dropped mid-download, or the file exceeds its cap (**10 MB** for images, **100 MB** for video). If it repeats for a specific campaign, report the creative's size to the Magnet team. |
+| `onRewarded` never fires | Either the placement is not a rewarded one (check the Placement Id), or the user did not watch the video far enough. Set `debugMode = true` and read the logs. |
+| Video takes a long time to start | The video is downloaded in full before it is shown, so the delay is in `requestAd`, not in `show`. Load the ad earlier. |
+| Loading returns `VIDEO_TIMEOUT` | The player stalled. If it repeats, report the device model and the video format to the Magnet team. |
 | The ad appeared but closed immediately | Image rendering failed and the SDK deliberately closed the dialog; `onAdFailedToShow` is called with code `ASSET_LOAD_FAILED`. |
 | The game/app does not resume after an ad | You tied resuming only to `onAdDismissed`; put the same logic in `onAdFailedToShow` as well (see [Step 6](#step-6--events-adlistener-and-the-load-result-adloadresult)). |
 | Gradle error: `requires compileSdk 34 or later` | Your project's compileSdk is below 34; raise it to `34` or higher. |
@@ -532,11 +673,14 @@ For easier debugging, set `debugMode = true` in `AdConfig` so the SDK's logs are
 
 ## Limitations
 
-- **Interstitial** image ads only (no video/banner/rewarded in this version).
+- **Interstitial** and **Rewarded** fullscreen ads only. Banner and native ads are not supported in this version.
+- Supported video formats: **MP4** and **WebM**. Adaptive streaming (HLS, DASH) is not supported.
+- Maximum size per video: **100 MB**.
+- Only one ad can be shown at a time.
 - **Android** only (API 21 and above).
 
 ---
 
-*SDK version: `1.0.0` — matching the value from `MagnetAdManager.getSDKVersion()`.*
+*SDK version: `1.8.0` — matching the value from `MagnetAdManager.getSDKVersion()`.*
 
 *Package downloads and latest release: [github.com/MagnetAds/magad-android-sdk](https://github.com/MagnetAds/magad-android-sdk)*
